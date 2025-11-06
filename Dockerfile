@@ -1,53 +1,88 @@
-# =======================================================
-# Stage 1: Build Frontend (Vite + Tailwind)
-# =======================================================
-FROM node:20-slim AS node_builder
-
-WORKDIR /app
-
-# Salin file package.json & lock untuk caching layer
-COPY package*.json ./
-
-# Install dependencies
-RUN npm install
-
-# Copy semua file project
-COPY . .
-
-# Jalankan build Vite (Tailwind, JS, dll)
-RUN npm run build
-
-
-# =======================================================
-# Stage 2: Laravel + PHP 8.3 + Composer
-# =======================================================
+# ============================================
+# 🧩 Base Image: PHP-FPM 8.3 (for Laravel)
+# ============================================
 FROM php:8.3-fpm
 
-# Install dependencies yang dibutuhkan Laravel
+# Set working directory
+WORKDIR /var/www
+
+# ============================================
+# 🧱 Install system dependencies
+# ============================================
 RUN apt-get update && apt-get install -y \
-    git zip unzip curl libpq-dev libonig-dev libxml2-dev libzip-dev \
-    && docker-php-ext-install pdo pdo_pgsql zip mbstring xml
+    build-essential \
+    libpng-dev libjpeg62-turbo-dev libfreetype6-dev \
+    libzip-dev libonig-dev \
+    libpq-dev pkg-config zip unzip git curl vim cron supervisor locales \
+    ca-certificates \
+    jpegoptim optipng pngquant gifsicle \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Composer
-COPY --from=composer:2.7 /usr/bin/composer /usr/bin/composer
+# ============================================
+# 🧩 Install PHP extensions
+# ============================================
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install gd mbstring zip exif pcntl pdo_pgsql \
+    && pecl install redis \
+    && docker-php-ext-enable redis
 
-# Set workdir
-WORKDIR /var/www/html
+# ============================================
+# 🧩 Install Composer
+# ============================================
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-# Copy source project
-COPY . .
+# ============================================
+# 🧩 Copy source files
+# ============================================
+COPY . /var/www
 
-# Copy hasil build frontend dari stage node
-COPY --from=node_builder /app/public/build ./public/build
+# ============================================
+# 🧩 Install Node for Tailwind/Vite
+# ============================================
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g npm
 
-# Install PHP dependencies (composer)
-RUN composer install --no-interaction --no-progress --prefer-dist
+# ============================================
+# 🧩 Install PHP dependencies (Composer)
+# ============================================
+RUN composer install --no-interaction --prefer-dist --optimize-autoloader
 
-# Set permissions untuk Laravel
-RUN chown -R www-data:www-data storage bootstrap/cache
+# ============================================
+# 🧩 Build Frontend (Vite)
+# ============================================
+RUN npm ci && npm run build
 
-# Expose port (FPM)
-EXPOSE 9000
+# ============================================
+# ⚙️ Supervisor configuration
+# ============================================
+RUN mkdir -p /var/log/supervisor
+COPY Docker/supervisor/supervisord.conf /etc/supervisor/supervisord.conf
 
-# Jalankan php-fpm
-CMD ["php-fpm"]
+# Example: inside supervisord.conf
+# [program:php-fpm]
+# command=php-fpm -F
+# [program:queue-worker]
+# command=php /var/www/artisan queue:listen --queue=scraping --sleep=3 --tries=3
+# [program:scheduler]
+# command=php /var/www/artisan schedule:work
+# [program:serve]
+# command=php artisan serve --host=0.0.0.0 --port=8000
+
+# ============================================
+# ✅ Permissions
+# ============================================
+RUN chown -R www-data:www-data /var/www \
+    && chmod -R 775 /var/www/storage /var/www/bootstrap/cache
+
+
+RUN npm install && npm run build
+# ============================================
+# 🌍 Expose Laravel port
+# ============================================
+EXPOSE 8000
+
+# ============================================
+# 🏁 Start Supervisor
+# ============================================
+CMD php artisan serve --host=0.0.0.0 --port=8000
