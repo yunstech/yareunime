@@ -12,14 +12,12 @@ WORKDIR /var/www
 RUN apt-get update && apt-get install -y \
     build-essential \
     libpng-dev libjpeg62-turbo-dev libfreetype6-dev \
-    libzip-dev libonig-dev \
-    libpq-dev pkg-config zip unzip git curl vim cron supervisor locales \
-    ca-certificates \
-    jpegoptim optipng pngquant gifsicle \
+    libzip-dev libonig-dev libpq-dev pkg-config zip unzip git curl vim cron supervisor locales \
+    nginx \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ============================================
-# 🧩 Install PHP extensions
+# 🧩 PHP extensions
 # ============================================
 RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-install gd mbstring zip exif pcntl pdo_pgsql \
@@ -27,26 +25,15 @@ RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
     && docker-php-ext-enable redis
 
 # ============================================
-# 🧩 Install Composer
+# 🧩 Composer & Node.js
 # ============================================
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
 
 # ============================================
-# 🧩 Copy source files
+# 🧩 Copy source code
 # ============================================
 COPY . /var/www
-
-# ============================================
-# 🧩 Install Node for Tailwind/Vite
-# ============================================
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g npm
-
-# ============================================
-# 🧩 Install PHP dependencies (Composer)
-# ============================================
-RUN composer install --no-interaction --prefer-dist --optimize-autoloader
 
 # ============================================
 # 🧩 Build Frontend (Vite)
@@ -54,35 +41,28 @@ RUN composer install --no-interaction --prefer-dist --optimize-autoloader
 RUN npm ci && npm run build
 
 # ============================================
+# ⚙️ Configure Nginx
+# ============================================
+COPY Docker/nginx/default.conf /etc/nginx/conf.d/default.conf
+RUN rm -f /etc/nginx/sites-enabled/default
+
+# ============================================
 # ⚙️ Supervisor configuration
 # ============================================
 RUN mkdir -p /var/log/supervisor
-COPY Docker/supervisor/supervisord.conf /etc/supervisor/supervisord.conf
-
-# Example: inside supervisord.conf
-# [program:php-fpm]
-# command=php-fpm -F
-# [program:queue-worker]
-# command=php /var/www/artisan queue:listen --queue=scraping --sleep=3 --tries=3
-# [program:scheduler]
-# command=php /var/www/artisan schedule:work
-# [program:serve]
-# command=php artisan serve --host=0.0.0.0 --port=8000
+COPY Docker/supervisor/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # ============================================
 # ✅ Permissions
 # ============================================
-RUN chown -R www-data:www-data /var/www \
-    && chmod -R 775 /var/www/storage /var/www/bootstrap/cache
-
-
-RUN npm install && npm run build
-# ============================================
-# 🌍 Expose Laravel port
-# ============================================
-EXPOSE 8000
+RUN chown -R www-data:www-data /var/www && chmod -R 775 /var/www/storage /var/www/bootstrap/cache
 
 # ============================================
-# 🏁 Start Supervisor
+# 🌍 Expose web port
 # ============================================
-CMD php artisan serve --host=0.0.0.0 --port=8000
+EXPOSE 80
+
+# ============================================
+# 🏁 Start Supervisor (which runs PHP-FPM + Nginx)
+# ============================================
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
